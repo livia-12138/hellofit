@@ -1,0 +1,17 @@
+{
+  "name": "HelloFit · 减脂记录",
+  "short_name": "HelloFit",
+  "description": "记录饮食、运动、体重与支出，让减脂有据可依。数据本地保存。",
+  "lang": "zh-CN",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#FAF5EA",
+  "theme_color": "#B98A4A",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
