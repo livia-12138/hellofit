@@ -1,0 +1,33 @@
+name: Deploy static site to Pages
+
+# 触发条件：push 到 main，或手动点 Run workflow
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+# 最小权限：读代码、写 Pages、拿临时身份令牌
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时刻只跑一个部署，避免并发冲突
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4          # 拉取仓库代码
+      - uses: actions/configure-pages@v5   # 初始化 Pages 环境
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .                            # 把整个仓库根目录打成发布产物
+      - id: deployment
+        uses: actions/deploy-pages@v4        # 发布到 Pages
