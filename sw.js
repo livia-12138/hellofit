@@ -1,4 +1,4 @@
-﻿var CACHE = 'greenfit-v8';
+﻿var CACHE = 'greenfit-v10';
 var ASSETS = [
   './',
   './index.html',
@@ -13,7 +13,17 @@ var ASSETS = [
 ];
 
 self.addEventListener('install', function (e) {
-  e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(ASSETS); }).then(function () { return self.skipWaiting(); }));
+  e.waitUntil(
+    caches.open(CACHE).then(function (c) {
+      // 更新时绕过 HTTP 缓存，避免把旧版本资源写进新缓存
+      return Promise.all(ASSETS.map(function (url) {
+        return fetch(new Request(url, { cache: 'reload' })).then(function (res) {
+          if (!res || !res.ok) throw new Error('fetch failed: ' + url);
+          return c.put(url, res);
+        });
+      }));
+    }).then(function () { return self.skipWaiting(); })
+  );
 });
 
 self.addEventListener('activate', function (e) {
