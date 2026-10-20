@@ -35,15 +35,24 @@ function brandLogo(size) {
   return '<span class="brand-mark" style="width:' + size + 'px;height:' + size + 'px;font-size:' + Math.round(size * 0.5) + 'px">H</span>';
 }
 
+function safeAvatar(src) {
+  const fallback = 'assets/hello-avatar.jpg';
+  if (!src) return fallback;
+  if (src === fallback) return fallback;
+  if (/^data:image\/(png|jpe?g|webp|gif);base64,[a-z0-9+/=\s]+$/i.test(src)) return src;
+  return fallback;
+}
+
 function avatarHTML(size, clickable) {
-  const src = state.profile.avatar || 'assets/hello-avatar.jpg';
+  const src = safeAvatar(state.profile.avatar);
   return '<span class="avatar' + (clickable ? ' clickable' : '') + '" style="width:' + size + 'px;height:' + size + 'px"' + (clickable ? ' data-action="avatar-click" title="更换头像"' : '') + '>' +
-    '<img src="' + src + '" alt="头像" onerror="this.style.display=\'none\';this.parentElement.classList.add(\'noimg\')">' +
+    '<img src="' + esc(src) + '" alt="头像" onerror="this.style.display=\'none\';this.parentElement.classList.add(\'noimg\')">' +
     (clickable ? '<span class="avatar-badge">' + I('camera') + '</span>' : '') +
     '</span>';
 }
 
 /* ================= 状态 ================= */
+// 兼容旧版本数据，不随品牌名改动
 const KEY = 'greenfit_v1';
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
@@ -115,7 +124,11 @@ function bmr(p) {
 const ACT = { sedentary: 1.2, light: 1.375, moderate: 1.55, very: 1.725 };
 const ACT_NAME = { sedentary: '久坐', light: '轻度活动', moderate: '中度活动', very: '高强度' };
 function tdee() { return bmr(state.profile) * (ACT[state.profile.activity] || 1.2); }
-function budget() { return Math.round(tdee() - state.profile.rate * 7700 / 7); }
+function calorieFloor() { return state.profile.gender === 'female' ? 1200 : 1500; }
+function budget() {
+  const raw = Math.round(tdee() - state.profile.rate * 7700 / 7);
+  return Math.max(calorieFloor(), raw);
+}
 function proteinTarget() { return Math.round(state.profile.weightKg * 1.6); }
 function fatTarget() { const b = budget(); return Math.max(40, Math.round(b * 0.25 / 9)); }
 function carbTarget() { const b = budget(); const p = proteinTarget() * 4 + fatTarget() * 9; return Math.max(50, Math.round((b - p) / 4)); }
@@ -298,7 +311,7 @@ function renderDashboard() {
 
   const html =
     sampleBanner +
-    topbar(fmtMD(today), greeting() + '，' + (p.name || '朋友'), gearBtn()) +
+    topbar(fmtMD(today), greeting() + '，' + esc(p.name || '朋友'), gearBtn()) +
     '<div class="hero">' +
     '<div class="hero-top"><div class="hero-eyebrow">今日 · 热量进度</div>' + avatarHTML(64, true) + '</div>' +
     '<div class="hero-num"><div class="big">' + Math.max(0, bud - tt.kcal) + '<span class="unit">千卡</span></div>' +
@@ -397,48 +410,102 @@ function openFoodModal(type) {
   renderFoodModalBody();
 }
 
+function foodSearchBoxHTML(q) {
+  return '<div class="search-box">' + I('search') +
+    '<input id="food-q" placeholder="搜索食物名称…" value="' + esc(q || '') + '" autocomplete="off">' +
+    '<button class="clear" data-action="clear-q">清空</button></div>';
+}
+
+function foodResultsHTML(q) {
+  const query = (q || '').trim().toLowerCase();
+  const matched = [];
+  FOOD_DB.forEach(function (f, i) {
+    if (f.n.toLowerCase().indexOf(query) !== -1) matched.push({ f: f, i: i });
+  });
+  const rows = matched.map(function (x) {
+    const f = x.f;
+    return '<div class="food-search-item"><div><div class="nm">' + esc(f.n) + '</div><div class="ds">' + esc(f.k) + ' kcal/100g · P' + esc(f.p) + ' C' + esc(f.c) + ' F' + esc(f.f) + '</div></div>' +
+      '<button class="add" data-action="pick-food" data-idx="' + x.i + '">' + (modalState.foodIdx === x.i ? '已选' : '+ 添加') + '</button></div>';
+  }).join('');
+  const customRows = state.customFoods.map(function (f, i) { return { f: f, i: i }; })
+    .filter(function (x) {
+      return x.f && typeof x.f === 'object' &&
+        (!query || String(x.f.n || '').toLowerCase().indexOf(query) !== -1);
+    })
+    .map(function (x) {
+      return '<div class="food-search-item"><div><div class="nm">' + esc(x.f.n) + '<span class="tag gray" style="margin-left:6px">我的</span></div><div class="ds">' + esc(x.f.k) + ' kcal/100g</div></div>' +
+        '<button class="add" data-action="pick-custom" data-idx="' + x.i + '">添加</button></div>';
+    }).join('');
+  return customRows + rows || '<div class="empty" style="padding:20px"><p>未找到，试试「自定义」</p></div>';
+}
+
+function previewNumsHTML(f, g) {
+  return Math.round(f.k * g / 100) + ' kcal · P ' + Math.round(f.p * g / 100) + 'g · C ' + Math.round(f.c * g / 100) + 'g · F ' + Math.round(f.f * g / 100) + 'g';
+}
+
+function updateFoodResults(value) {
+  modalState.q = value;
+  // 已选食物时重新输入，回到搜索结果，避免“选中后换不了”
+  if (modalState.food) {
+    modalState.food = null;
+    modalState.foodIdx = null;
+    renderFoodModalBody();
+    const nq = document.getElementById('food-q');
+    if (nq) { nq.focus(); nq.setSelectionRange(nq.value.length, nq.value.length); }
+    return;
+  }
+  const listEl = document.getElementById('food-list');
+  if (!listEl) return;
+  const top = listEl.scrollTop;
+  listEl.innerHTML = foodResultsHTML(value);
+  listEl.scrollTop = top;
+}
+
+function bindFoodSearch() {
+  const input = document.getElementById('food-q');
+  if (!input) return;
+  input.addEventListener('compositionstart', function () { modalState.composing = true; });
+  input.addEventListener('compositionend', function (e) {
+    modalState.composing = false;
+    updateFoodResults(e.target.value);
+  });
+  input.addEventListener('input', function (e) {
+    // 中文输入法组合期间不重绘，避免打断候选词
+    if (e.isComposing || modalState.composing) return;
+    updateFoodResults(e.target.value);
+  });
+}
+
 function renderFoodModalBody() {
   const body = document.getElementById('food-modal-body');
   if (modalState.phase === 'db') {
-    const q = (modalState.q || '').toLowerCase();
-    let list = FOOD_DB.filter(f => f.n.toLowerCase().includes(q));
-    if (q) list = FOOD_DB.filter(f => f.n.toLowerCase().includes(q));
-    const myCustom = state.customFoods.filter(f => !q || f.n.toLowerCase().includes(q));
-    const rows = list.map((f, i) =>
-      '<div class="food-search-item"><div><div class="nm">' + esc(f.n) + '</div><div class="ds">' + f.k + ' kcal/100g · P' + f.p + ' C' + f.c + ' F' + f.f + '</div></div>' +
-      '<button class="add" data-action="pick-food" data-idx="' + i + '">+' + (modalState.foodIdx === i ? ' 已选' : ' 添加') + '</button></div>').join('');
-    const customRows = myCustom.map((f, i) =>
-      '<div class="food-search-item"><div><div class="nm">' + esc(f.n) + '<span class="tag gray" style="margin-left:6px">我的</span></div><div class="ds">' + f.k + ' kcal/100g</div></div>' +
-      '<button class="add" data-action="pick-custom" data-idx="' + state.customFoods.indexOf(f) + '">添加</button></div>').join('');
-
     if (modalState.food) {
-      const f = modalState.food; const g = modalState.grams;
+      const f = modalState.food;
+      const g = modalState.grams;
       body.innerHTML =
-        '<div class="search-box">' + I('search') + '<input id="food-q" placeholder="搜索食物名称…" value="' + esc(q || '') + '">' +
-        '<button class="clear" data-action="clear-q">清空</button></div>' +
+        foodSearchBoxHTML(modalState.q) +
         '<div class="card" style="box-shadow:none;background:var(--green-50)"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
-        '<b style="font-size:.95rem">' + esc(f.n) + '</b><span class="tag green">' + f.k + ' kcal/100g</span></div>' +
+        '<b style="font-size:.95rem">' + esc(f.n) + '</b><span class="tag green">' + esc(f.k) + ' kcal/100g</span></div>' +
         '<div class="field"><label>食用克数（g）</label><div style="display:flex;align-items:center;gap:10px">' +
         '<button class="d-btn" data-action="grams" data-d="-10">−10</button><button class="d-btn" data-action="grams" data-d="-1">−1</button>' +
         '<input id="grams" type="number" min="1" value="' + g + '" style="text-align:center;font-weight:800;font-size:1.1rem;width:90px;padding:10px">' +
         '<button class="d-btn" data-action="grams" data-d="1">+1</button><button class="d-btn" data-action="grams" data-d="10">+10</button>' +
         '</div></div>' +
         '<div class="macro" style="background:var(--card)"><div class="top"><span>营养预估（' + g + 'g）</span></div>' +
-        '<b id="preview-nums" style="font-size:1rem;color:var(--green-900)">' + Math.round(f.k * g / 100) + ' kcal · P ' + Math.round(f.p * g / 100) + 'g · C ' + Math.round(f.c * g / 100) + 'g · F ' + Math.round(f.f * g / 100) + 'g</b></div>' +
+        '<b id="preview-nums" style="font-size:1rem;color:var(--green-900)">' + previewNumsHTML(f, g) + '</b></div>' +
         '<button class="btn btn-primary" data-action="confirm-food" style="margin-top:12px">加入 ' + mealLabel(modalState.type) + '</button></div>';
-      document.getElementById('food-q').addEventListener('input', e => { modalState.q = e.target.value; renderFoodModalBody(); });
-      document.getElementById('grams').addEventListener('input', e => {
+      bindFoodSearch();
+      document.getElementById('grams').addEventListener('input', function (e) {
         modalState.grams = Math.max(1, Number(e.target.value) || 1);
         const el = document.getElementById('preview-nums');
-        if (el) el.textContent = Math.round(f.k * modalState.grams / 100) + ' kcal · P ' + Math.round(f.p * modalState.grams / 100) + 'g · C ' + Math.round(f.c * modalState.grams / 100) + 'g · F ' + Math.round(f.f * modalState.grams / 100) + 'g';
+        if (el) el.innerHTML = previewNumsHTML(f, modalState.grams);
       });
     } else {
       body.innerHTML =
-        '<div class="search-box">' + I('search') + '<input id="food-q" placeholder="搜索食物名称…" value="' + esc(q || '') + '">' +
-        '<button class="clear" data-action="clear-q">清空</button></div>' +
-        '<div class="food-search-list">' + (customRows + rows || '<div class="empty" style="padding:20px"><p>未找到，试试「自定义」</p></div>') + '</div>' +
+        foodSearchBoxHTML(modalState.q) +
+        '<div class="food-search-list" id="food-list">' + foodResultsHTML(modalState.q) + '</div>' +
         '<button class="btn btn-primary" data-action="confirm-custom" style="margin-top:10px">没有？直接自定义记录</button>';
-      document.getElementById('food-q').addEventListener('input', e => { modalState.q = e.target.value; renderFoodModalBody(); });
+      bindFoodSearch();
     }
   } else {
     const g = modalState.grams;
@@ -560,7 +627,7 @@ function renderWeight() {
   const delta = weightDelta();
   const p = state.profile;
   const tPct = p.targetKg && p.weightKg > p.targetKg ? Math.min(100, Math.max(0, (p.weightKg - lw) / (p.weightKg - p.targetKg) * 100)) : 0;
-  const goalDays = p.rate > 0 ? Math.round((lw - p.targetKg) / (p.rate / 7)) : null;
+  const goalDays = p.rate > 0 ? Math.max(0, Math.round((lw - p.targetKg) / (p.rate / 7))) : null;
 
   const rows = ws.slice().reverse().map((w, i) => {
     const prev = i + 1 < ws.length ? ws[ws.length - 1 - i - 1] : null;
@@ -578,7 +645,7 @@ function renderWeight() {
     '<div class="row">' +
     '<div class="cell"><div class="l">较起始</div><div class="v" style="color:#D9F2E4">' + (delta <= 0 ? '−' + wtFmt(Math.abs(delta)) : '+' + wtFmt(delta)) + ' ' + unitName() + '</div></div>' +
     '<div class="cell"><div class="l">目标</div><div class="v" style="color:#D9F2E4">' + wtFmt(p.targetKg) + ' ' + unitName() + '</div></div>' +
-    (goalDays !== null ? '<div class="cell"><div class="l">预计达成</div><div class="v" style="color:#D9F2E4">约 ' + goalDays + ' 天</div></div>' : '') +
+    (goalDays !== null ? '<div class="cell"><div class="l">预计达成</div><div class="v" style="color:#D9F2E4">' + (goalDays === 0 ? '已达成' : '约 ' + goalDays + ' 天') + '</div></div>' : '') +
     '</div></div>' +
 
     '<div class="card"><div class="card-head"><h3><span class="dot"></span>体重趋势</h3><span class="link">' + ws.length + ' 条记录</span></div>' +
@@ -689,6 +756,9 @@ function renderSettings() {
   const b = Math.round(bmr(p));
   const t = Math.round(tdee());
   const bud = budget();
+  const rawBudget = Math.round(tdee() - p.rate * 7700 / 7);
+  const floor = calorieFloor();
+  const floored = rawBudget < floor;
   const pt = proteinTarget(), ft = fatTarget(), ct = carbTarget();
 
   const html =
@@ -726,6 +796,7 @@ function renderSettings() {
     '<div class="calc-row"><span class="k">热量缺口</span><span class="v">' + Math.round(p.rate * 7700 / 7) + ' <small>kcal/日</small></span></div>' +
     '<div class="calc-row total"><span class="k">每日摄入预算</span><span class="v" style="font-size:1.2rem">' + bud + ' <small>kcal</small></span></div>' +
     '</div>' +
+    (floored ? '<p class="hint" style="color:#B45309;margin-top:8px;line-height:1.7">按目标缺口计算为 ' + rawBudget + ' kcal，低于安全下限，已按 ' + floor + ' kcal 显示。不建议长期低于基础代谢；孕产、未成年或疾病人群请咨询医生。</p>' : '') +
     '<div class="macro-bar" style="margin-top:12px">' +
     '<div class="macro"><div class="top"><span>蛋白质</span><b>' + pt + 'g</b></div></div>' +
     '<div class="macro"><div class="top"><span>碳水</span><b>' + ct + 'g</b></div></div>' +
@@ -743,7 +814,7 @@ function renderSettings() {
     '<input id="import-file" type="file" accept=".json,application/json" class="hidden"></div>' +
 
     '<div class="privacy-note">' + I('shield') +
-    '<span><strong>隐私保障</strong>：所有数据仅保存在你的手机浏览器本地，不联网、不上传、无账号，也不使用任何 API Key。卸载 App 或清除浏览器数据才会丢失，记得定期导出备份。</span></div>' +
+    '<span><strong>隐私保障</strong>：所有数据仅保存在你的手机浏览器本地，不上传、无账号，也不使用任何 API Key。卸载 App 或清除浏览器数据才会丢失，记得定期导出备份。</span></div>' +
     '<p style="text-align:center;font-size:.72rem;color:var(--text-3);padding-bottom:10px">HelloFit · 为减脂路上的你设计</p>';
 
   document.getElementById('view-settings').innerHTML = html;
@@ -751,15 +822,19 @@ function renderSettings() {
 
 function readProfile() {
   const v = id => { const el = document.getElementById(id); return el ? el.value : ''; };
-  state.profile.name = v('p-name');
-  state.profile.gender = v('p-gender');
-  state.profile.age = Number(v('p-age')) || 25;
-  state.profile.heightCm = Number(v('p-height')) || 165;
-  state.profile.weightKg = wtParse(Number(v('p-weight')) || (state.profile.unit === 'jin' ? 110 : 55));
-  state.profile.targetKg = wtParse(Number(v('p-target')) || (state.profile.unit === 'jin' ? 100 : 50));
-  state.profile.startDate = v('p-start') || todayKey();
-  state.profile.activity = v('p-activity') || 'light';
-  state.profile.rate = Number(v('p-rate')) || 0.5;
+  const clamp = (n, lo, hi, def) => {
+    const x = Number(n);
+    return isFinite(x) ? Math.min(hi, Math.max(lo, x)) : def;
+  };
+  state.profile.name = String(v('p-name') || '').slice(0, 24);
+  state.profile.gender = v('p-gender') === 'male' ? 'male' : 'female';
+  state.profile.age = clamp(v('p-age'), 10, 100, 25);
+  state.profile.heightCm = clamp(v('p-height'), 100, 250, 165);
+  state.profile.weightKg = clamp(wtParse(Number(v('p-weight')) || (state.profile.unit === 'jin' ? 110 : 55)), 20, 300, 55);
+  state.profile.targetKg = clamp(wtParse(Number(v('p-target')) || (state.profile.unit === 'jin' ? 100 : 50)), 20, 300, 50);
+  state.profile.startDate = /^\d{4}-\d{2}-\d{2}$/.test(v('p-start')) ? v('p-start') : todayKey();
+  state.profile.activity = ACT[v('p-activity')] ? v('p-activity') : 'light';
+  state.profile.rate = clamp(v('p-rate'), 0.25, 1, 0.5);
   if (state.meta) state.meta.sample = false;
   save();
 }
@@ -770,26 +845,110 @@ function exportData() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = '绿衡减脂备份_' + todayKey() + '.json';
+  a.download = 'HelloFit备份_' + todayKey() + '.json';
   document.body.appendChild(a);
   a.click();
   setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 500);
   toast('已导出备份');
 }
 
+function toNum(v, min, max, def) {
+  const n = Number(v);
+  if (!isFinite(n)) return def;
+  return Math.min(max, Math.max(min, n));
+}
+function toStr(v, max) {
+  return String(v == null ? '' : v).slice(0, max);
+}
+function toDate(v, def) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : def;
+}
+
+// 导入文件是不可信输入：只接受白名单字段，数值/日期/枚举全部重新校验
+function normalizeImportedState(raw) {
+  const base = defaultState();
+  const p = raw.profile || {};
+  const profile = Object.assign({}, DEF_PROFILE, {
+    name: toStr(p.name, 24),
+    gender: p.gender === 'male' ? 'male' : 'female',
+    age: toNum(p.age, 10, 100, DEF_PROFILE.age),
+    heightCm: toNum(p.heightCm, 100, 250, DEF_PROFILE.heightCm),
+    weightKg: toNum(p.weightKg, 20, 300, DEF_PROFILE.weightKg),
+    targetKg: toNum(p.targetKg, 20, 300, DEF_PROFILE.targetKg),
+    activity: ACT[p.activity] ? p.activity : 'light',
+    rate: toNum(p.rate, 0.25, 1, 0.5),
+    startDate: toDate(p.startDate, base.profile.startDate),
+    unit: p.unit === 'jin' ? 'jin' : 'kg',
+    avatar: safeAvatar(p.avatar),
+  });
+  const list = v => Array.isArray(v) ? v.slice(0, 5000).filter(x => x && typeof x === 'object') : [];
+  const meals = list(raw.meals).map(m => ({
+    id: toStr(m.id, 40) || uid(),
+    date: toDate(m.date, base.profile.startDate),
+    type: ['breakfast', 'lunch', 'dinner', 'snack'].indexOf(m.type) !== -1 ? m.type : 'snack',
+    name: toStr(m.name, 60),
+    kcal: toNum(m.kcal, 0, 5000, 0),
+    p: toNum(m.p, 0, 500, 0),
+    c: toNum(m.c, 0, 500, 0),
+    f: toNum(m.f, 0, 500, 0),
+    g: toNum(m.g, 1, 5000, 100),
+  }));
+  const exercises = list(raw.exercises).map(x => ({
+    id: toStr(x.id, 40) || uid(),
+    date: toDate(x.date, base.profile.startDate),
+    name: toStr(x.name, 60),
+    minutes: toNum(x.minutes, 1, 1440, 30),
+    met: x.met == null ? null : toNum(x.met, 0, 30, null),
+    kcal: toNum(x.kcal, 0, 10000, 0),
+  }));
+  const weights = list(raw.weights).map(x => ({
+    id: toStr(x.id, 40) || uid(),
+    date: toDate(x.date, base.profile.startDate),
+    value: toNum(x.value, 20, 300, DEF_PROFILE.weightKg),
+  }));
+  const expenses = list(raw.expenses).map(x => ({
+    id: toStr(x.id, 40) || uid(),
+    date: toDate(x.date, base.profile.startDate),
+    amount: toNum(x.amount, 0, 1000000, 0),
+    category: CATS.some(c => c.id === x.category) ? x.category : 'other',
+    note: toStr(x.note, 30),
+  }));
+  const customFoods = list(raw.customFoods).map(x => ({
+    n: toStr(x.n, 60),
+    k: toNum(x.k, 0, 5000, 0),
+    p: toNum(x.p, 0, 500, 0),
+    c: toNum(x.c, 0, 500, 0),
+    f: toNum(x.f, 0, 500, 0),
+  })).filter(x => x.n);
+  return {
+    version: 1,
+    profile: profile,
+    customFoods: customFoods,
+    meals: meals,
+    exercises: exercises,
+    weights: weights,
+    expenses: expenses,
+    meta: { sample: false, onboarded: !!(raw.meta && raw.meta.onboarded) },
+  };
+}
+
 function importData(file) {
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) { toast('导入失败：文件超过 2MB'); return; }
   const reader = new FileReader();
   reader.onload = () => {
     try {
       const j = JSON.parse(reader.result);
-      if (!j || typeof j !== 'object' || !j.profile) throw new Error('bad');
-      const base = defaultState();
-      state = Object.assign(base, j, { meta: Object.assign({}, base.meta, j.meta || {}) });
+      if (!j || typeof j !== 'object' || !j.profile || typeof j.profile !== 'object') throw new Error('bad');
+      state = normalizeImportedState(j);
       save();
+      viewDate = todayKey();
+      viewMonth = todayKey().slice(0, 7);
       toast('导入成功');
       showView('dashboard');
     } catch (e) { toast('导入失败：文件格式不正确'); }
   };
+  reader.onerror = () => toast('导入失败：读取文件出错');
   reader.readAsText(file);
 }
 
@@ -838,7 +997,14 @@ document.addEventListener('click', function (e) {
     modalState.food = state.customFoods[Number(t.dataset.idx)]; modalState.grams = 100;
     renderFoodModalBody();
   }
-  else if (act === 'clear-q') { modalState.q = ''; renderFoodModalBody(); }
+  else if (act === 'clear-q') {
+    modalState.q = '';
+    modalState.food = null;
+    modalState.foodIdx = null;
+    renderFoodModalBody();
+    const q = document.getElementById('food-q');
+    if (q) q.focus();
+  }
   else if (act === 'grams') {
     modalState.grams = Math.max(1, (modalState.grams || 100) + Number(t.dataset.d));
     renderFoodModalBody();
